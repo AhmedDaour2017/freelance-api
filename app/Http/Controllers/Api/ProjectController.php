@@ -81,7 +81,9 @@ class ProjectController extends Controller
 
     public function show(Project $project)
     {
-        return response()->json(['project' => $project->load('client:id,name,email')]);
+        return response()->json([
+        'project' => $project->load(['client:id,name,email', 'proposals'])
+    ]);
     }
 
 

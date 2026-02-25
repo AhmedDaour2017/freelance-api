@@ -52,6 +52,7 @@ class ProposalController extends Controller
         );
 
         return response()->json([
+            'status' => true,
             'message' => 'Proposal sent successfully.',
             'proposal' => $proposal
         ], 201);
