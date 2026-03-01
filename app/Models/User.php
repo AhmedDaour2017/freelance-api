@@ -48,6 +48,8 @@ class User extends Authenticatable
         ];
     }
 
+    protected $appends = ['avg_rating', 'reviews_count'];
+
     public function projects()
     {
     return $this->hasMany(Project::class, 'client_id');
@@ -65,10 +67,28 @@ class User extends Authenticatable
     }
 
 
-
     public function withdrawals()
     {
         return $this->hasMany(WithdrawalRequest::class);
+    }
+
+    public function transactions() {
+        return $this->hasMany(Transaction::class);
+    }
+
+
+    
+
+    public function getAvgRatingAttribute() {
+        return round($this->reviews()->avg('rating') ?: 0, 1);
+    }
+
+    public function getReviewsCountAttribute() {
+        return $this->reviews()->count();
+    }
+
+    public function reviews() {
+        return $this->hasMany(Review::class, 'user_id'); // التقييمات اللي انكتبت عنه
     }
 
 

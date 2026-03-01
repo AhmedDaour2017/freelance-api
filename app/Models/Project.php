@@ -29,6 +29,10 @@ class Project extends Model
     return $this->hasMany(Proposal::class);
     }
 
+    public function reviews() { 
+        return $this->hasMany(Review::class);
+    }
+
 
 
     protected static function booted() {

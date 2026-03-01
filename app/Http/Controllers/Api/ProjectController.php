@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Helpers\NotificationHelper;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Models\Transaction;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -20,7 +21,15 @@ class ProjectController extends Controller
         $query = Project::orderBy('id', 'desc');
 
         if ($user->role === 'freelancer') {
-            $query->where('status', 'open');
+            // الفريلانسر يشوف المشاريع المفتوحة (للتقديم) 
+            // "أو" المشاريع التي يشارك فيها فعلياً (للمتابعة والتقييم)
+            $query->where(function($q) use ($user) {
+                $q->where('status', 'open')
+                ->orWhereHas('proposals', function($p) use ($user) {
+                    $p->where('freelancer_id', $user->id)
+                        ->whereIn('status', ['accepted']); // العروض التي تم قبولها
+                });
+            });
         }
 
         if ($user->role === 'client') {
@@ -81,8 +90,11 @@ class ProjectController extends Controller
 
     public function show(Project $project)
     {
+        // return response()->json([
+        // 'project' => $project->load(['client:id,name,email', 'proposals'])
+        // ]);
         return response()->json([
-        'project' => $project->load(['client:id,name,email', 'proposals'])
+        'project' => $project->load(['client', 'proposals.freelancer:id,name', 'reviews'])
     ]);
     }
 
@@ -98,6 +110,12 @@ class ProjectController extends Controller
 
         if ($user->role === 'client' && $project->client_id !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        if ($user->role === 'client' && $project->status !== 'open') {
+        return response()->json([
+            'message' => 'Cannot modify project details after it has been started or closed.'
+        ], 422);
         }
 
         $validated = $request->validate([
@@ -150,71 +168,105 @@ class ProjectController extends Controller
 
     public function complete($id)
     {
-    $project = Project::with('proposals')->findOrFail($id);
-    $user = Auth::user();
+        // 1. جلب المشروع مع العرض المقبول والفريلانسر (Eager Loading)
+        $project = Project::with(['proposals' => function($q) {
+            $q->where('status', 'accepted');
+        }, 'proposals.freelancer'])->findOrFail($id);
 
-    // 🔴 فقط صاحب المشروع يكمل
-    if ($user->id !== $project->client_id) {
-        return response()->json([
-            'message' => 'Only the project owner can complete this project.'
-        ], 403);
-    }
+        $acceptedProposal = $project->proposals->first();
+        $user = Auth::user();
 
-    // 🔴 لازم يكون in_progress
-    if ($project->status !== 'in_progress') {
-        return response()->json([
-            'message' => 'Project must be in progress to complete.'
-        ], 400);
-    }
-
-    // 🔴 لازم يكون في عرض مقبول
-    $acceptedProposal = $project->proposals()
-        ->where('status', 'accepted')
-        ->first();
-
-    if (!$acceptedProposal) {
-        return response()->json([
-            'message' => 'No accepted proposal found.'
-        ], 400);
-    }
-
-    DB::transaction(function () use ($project, $acceptedProposal) {
-
-        $client = $project->client;
-        $freelancer = User::find($acceptedProposal->freelancer_id);
-
-        $amount = $acceptedProposal->price;
-
-        // 🔴 حماية إضافية
-        if ($client->pending_balance < $amount) {
-            abort(400, 'Escrow balance mismatch.');
+        // 2. التحققات الأمنية والمنطقية
+        if ($user->id !== $project->client_id) {
+            return response()->json(['message' => 'Only the project owner can complete this project.'], 403);
         }
 
-        // 💰 تحرير الأموال
-        $client->pending_balance -= $amount;
-        $client->save();
+        if ($project->status !== 'in_progress' || !$acceptedProposal) {
+            return response()->json(['message' => 'Project must be in progress with an accepted proposal.'], 400);
+        }
 
-        $freelancer->balance += $amount;
-        $freelancer->save();
+        try {
+            DB::transaction(function () use ($project, $acceptedProposal) {
+                // 3. قفل السجلات المالية (Lock for Update) لمنع التلاعب بالرصيد
+                $client = User::where('id', $project->client_id)->lockForUpdate()->first();
+                $freelancer = User::where('id', $acceptedProposal->freelancer_id)->lockForUpdate()->first();
+                $admin = User::where('role', 'admin')->lockForUpdate()->first(); // جلب الأدمن
 
-        // تحديث حالة المشروع
-        $project->status = 'completed';
-        $project->save();
-    });
+                $totalAmount = $acceptedProposal->price;
+
+                // 4. حساب العمولة (مثلاً 10% للمنصة)
+                $commission = $totalAmount * 0.10; 
+                $netToFreelancer = $totalAmount - $commission;
+
+                // التحقق من أن الرصيد المعلق كافٍ (Double Check)
+                if ($client->pending_balance < $totalAmount) {
+                    throw new \Exception('Escrow balance mismatch. Please contact support.');
+                }
+
+                // 5. العمليات المالية (التحويلات)
+                // أ- خصم المبلغ كاملاً من الرصيد المعلق للعميل
+                $client->decrement('pending_balance', $totalAmount);
+                // ب- إضافة المبلغ الصافي لرصيد الفريلانسر المتاح
+                $freelancer->increment('balance', $netToFreelancer);
+
+                // ج- إضافة العمولة لرصيد الأدمن (ربح المنصة)
+                if ($admin) {
+                    $admin->increment('balance', $commission);
+                }
+
+                // 6. توثيق العمليات في جدول Transactions (اختياري ولكن ينصح به بشدة)
+                
+                // سجل للفريلانسر (دخل مشروع)
+                Transaction::create([
+                    'user_id' => $freelancer->id,
+                    'amount' => $netToFreelancer,
+                    'type' => 'project_revenue',
+                    'description' => "Revenue from project: {$project->title} (Net)",
+                    'trackable_id' => $project->id,
+                    'trackable_type' => Project::class
+                ]);
+
+                // سجل للأدمن (عمولة المنصة)
+                if ($admin) {
+                    Transaction::create([
+                        'user_id' => $admin->id,
+                        'amount' => $commission,
+                        'type' => 'platform_commission',
+                        'description' => "Commission from project #{$project->id}",
+                    ]);
+                }
+                
+
+                // 7. تحديث حالات المشروع والعرض
+                $project->update(['status' => 'completed']);
+                $acceptedProposal->update(['status' => 'completed']);
+            });
+
+            // 8. إرسال الإشعارات للطرفين (الفريلانسر والعميل)
+            NotificationHelper::sendNotification(
+                $acceptedProposal->freelancer_id,
+                'project_completed',
+                'Project "' . $project->title . '" completed. Funds (after fees) added to your balance.'
+            );
 
             NotificationHelper::sendNotification(
-            $project->client_id,
-            'project_completed',
-            'You completed the project "' . $project->title . '" successfully!'
-        );
+                $project->client_id,
+                'project_completed',
+                'You marked project "' . $project->title . '" as completed. Thanks for using our platform!'
+            );
 
+            return response()->json([
+                'status' => true,
+                'message' => 'Project completed. Freelancer paid and commission transferred to platform.',
+                'project_status' => 'completed'
+            ]);
 
-        return response()->json([
-            'message' => 'Project completed successfully.',
-            'project_status' => $project->status
-        ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Error: ' . $e->getMessage()
+            ], 400);
+        }
     }
-
-
 
 }

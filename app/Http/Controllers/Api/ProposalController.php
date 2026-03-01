@@ -6,6 +6,8 @@ use App\Helpers\NotificationHelper;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Models\Proposal;
+use App\Models\Transaction;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -60,153 +62,131 @@ class ProposalController extends Controller
 
 
 
-
-    // public function accept(Request $request, Proposal $proposal)
-    // {
-    //     $user = $request->user();
-    //     $project = $proposal->project;
-
-    //     // التحقق من الصلاحيات والحالات (نفس اللي كتبناه قبل)
-    //     if ($project->status !== 'open') {
-    //         return response()->json([
-    //             'message' => 'This project is not open for accepting proposals.'
-    //         ], 400);
-    //     }
-
-    //     if ($proposal->status !== 'pending') {
-    //         return response()->json([
-    //             'message' => 'This proposal cannot be accepted.'
-    //         ], 400);
-    //     }
-
-    //     if (
-    //         $user->role !== 'admin' &&
-    //         !($user->role === 'client' && $project->client_id === $user->id)
-    //     ) {
-    //         return response()->json([
-    //             'message' => 'Unauthorized.'
-    //         ], 403);
-    //     }
-
-    //     DB::transaction(function () use ($proposal, $project) {
-
-    //         // قبول العرض
-    //         $proposal->update([
-    //             'status' => 'accepted'
-    //         ]);
-
-    //         // رفض الباقي
-    //         $project->proposals()
-    //             ->where('id', '!=', $proposal->id)
-    //             ->update(['status' => 'rejected']);
-
-    //         // تحديث المشروع
-    //         $project->update([
-    //             'status' => 'in_progress'
-    //         ]);
-    //     });
-
-
-    //     NotificationHelper::sendNotification(
-    //     $proposal->freelancer_id,
-    //     'proposal_accepted',
-    //     'Your proposal for project "' . $project->title . '" has been accepted!'
-    //     );
-
-    //     NotificationHelper::sendNotification(
-    //     $project->client_id,
-    //     'proposal_accepted',
-    //     'You accepted a proposal for project "' . $project->title . '"'
-    //     );
-
-    //     return response()->json([
-    //         'message' => 'Proposal accepted successfully.',
-    //         'project_status' => 'in_progress'
-    //     ]);
-    // }
-
-
-    public function accept($id)
-    {
-    $proposal = Proposal::with('project.client')->findOrFail($id);
+public function accept($id)
+{
+    // جلب العرض مع العلاقات والـ Client (قفل السجل للتعديل لمنع الـ Race Condition)
+    $proposal = Proposal::with(['project.client', 'freelancer'])->findOrFail($id);
     $project = $proposal->project;
     $user = Auth::user();
 
-    // 🔴 فقط صاحب المشروع يقبل
+    // 1. التحققات الأمنية (Validation)
     if ($user->id !== $project->client_id) {
-        return response()->json([
-            'message' => 'Only the project owner can accept proposals.'
-        ], 403);
+        return response()->json(['message' => 'Only the project owner can accept proposals.'], 403);
     }
 
-    // 🔴 منع لو المشروع already in_progress
     if ($project->status === 'in_progress') {
-        return response()->json([
-            'message' => 'This project is already in progress.'
-        ], 400);
+        return response()->json(['message' => 'This project is already in progress.'], 400);
     }
 
-    // 🔴 منع لو العرض rejected
-    if ($proposal->status === 'rejected') {
-        return response()->json([
-            'message' => 'You cannot accept a rejected proposal.'
-        ], 400);
+    if ($proposal->status !== 'pending') {
+        return response()->json(['message' => 'This proposal is already ' . $proposal->status], 400);
     }
 
-    // 🔴 منع لو العرض accepted مسبقاً
-    if ($proposal->status === 'accepted') {
-        return response()->json([
-            'message' => 'This proposal is already accepted.'
-        ], 400);
-    }
+    try {
+        DB::transaction(function () use ($proposal, $project) {
+            // جلب العميل مع قفل السجل (Database Lock) لضمان عدم تغير الرصيد أثناء العملية
+            $client = User::where('id', $project->client_id)->lockForUpdate()->first();
 
-    DB::transaction(function () use ($proposal, $project) {
+            // التأكد من كفاية الرصيد
+            if ($client->balance < $proposal->price) {
+                throw new \Exception('Insufficient balance in your account.');
+            }
 
-        $client = $project->client;
+            // 💸 العمليات المالية (استخدام decrement/increment أدق في قواعد البيانات)
+            $client->decrement('balance', $proposal->price);
+            $client->increment('pending_balance', $proposal->price);
 
-        if ($client->balance < $proposal->price) {
-            abort(400, 'Insufficient balance.');
-        }
+            // 📝 توثيق الحركة المالية في جدول Transactions (مهم جداً للتدقيق)
+            // إذا لم تنشئ الموديل بعد، يمكنك التعليق على هذا الجزء مؤقتاً
+            
+            Transaction::create([
+                'user_id' => $client->id,
+                'amount' => $proposal->price,
+                'type' => 'project_payment', // دفع لمشروع
+                'status' => 'completed',
+                'description' => "Locked funds for project: " . $project->title,
+                'trackable_id' => $project->id,
+                'trackable_type' => get_class($project),
+            ]);
+            
 
-        // 💸 نقل الأموال إلى Escrow
-        $client->balance -= $proposal->price;
-        $client->pending_balance += $proposal->price;
-        $client->save();
+            // 🛠 تحديث حالة المشروع والعرض
+            $project->update(['status' => 'in_progress']);
+            $proposal->update(['status' => 'accepted']);
 
-        // تحديث المشروع
-        $project->status = 'in_progress';
-        $project->save();
+            // رفض باقي العروض المقدمة على هذا المشروع تلقائياً
+            Proposal::where('project_id', $project->id)
+                ->where('id', '!=', $proposal->id)
+                ->where('status', 'pending')
+                ->update(['status' => 'rejected']);
+        });
 
-        // قبول العرض
-        $proposal->status = 'accepted';
-        $proposal->save();
-
-        // رفض باقي العروض
-        Proposal::where('project_id', $project->id)
-            ->where('id', '!=', $proposal->id)
-            ->update(['status' => 'rejected']);
-    });
-
-
+        // 🔔 إرسال الإشعارات (خارج الترانزاكشن لضمان السرعة)
         NotificationHelper::sendNotification(
-        $proposal->freelancer_id,
-        'proposal_accepted',
-        'Your proposal for project "' . $project->title . '" has been accepted!'
+            $proposal->freelancer_id,
+            'proposal_accepted',
+            'Your proposal for project "' . $project->title . '" has been accepted!'
         );
 
         NotificationHelper::sendNotification(
-        $project->client_id,
-        'proposal_accepted',
-        'You accepted a proposal for project "' . $project->title . '"'
+            $project->client_id,
+            'proposal_accepted',
+            'You accepted a proposal for project "' . $project->title . '"'
         );
 
-    return response()->json([
-        'message' => 'Proposal accepted and funds moved to escrow.'
-    ]);
+        return response()->json([
+            'status' => true,
+            'message' => 'Proposal accepted. Funds moved to escrow and project started.'
+        ]);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'status' => false,
+            'message' => $e->getMessage()
+        ], 400);
+    }
 }
 
 
 
+
+
+
+
+
+
+    public function reject($id)
+    {
+        $proposal = Proposal::findOrFail($id);
+        $project = $proposal->project;
+        $user = Auth::user();
+
+        // 🔴 التأكد أن صاحب المشروع هو من يرفض
+        if ($user->id !== $project->client_id) {
+            return response()->json(['message' => 'Unauthorized.'], 403);
+        }
+
+        // 🔴 لا يمكن رفض عرض مقبول مسبقاً أو مرفوض مسبقاً
+        if ($proposal->status !== 'pending') {
+            return response()->json(['message' => 'This proposal is already ' . $proposal->status], 400);
+        }
+
+        // تحديث الحالة
+        $proposal->status = 'rejected';
+        $proposal->save();
+
+        // 🔥 إرسال إشعار للفريلانسر
+        NotificationHelper::sendNotification(
+            $proposal->freelancer_id,
+            'proposal_rejected',
+            'Your proposal for project "' . $project->title . '" has been rejected.'
+        );
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Proposal rejected successfully.'
+        ]);
+    }
 
 
 
