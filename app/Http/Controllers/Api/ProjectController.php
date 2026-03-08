@@ -17,17 +17,16 @@ class ProjectController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
+        // 1. نبدأ الاستعلام مع العلاقات (مهم للسرعة)
+        $query = Project::with(['client', 'proposals'])->orderBy('id', 'desc');
 
-        $query = Project::orderBy('id', 'desc');
-
+        // 2. منطق الأدوار (Role-based logic) - كما هو في كودك
         if ($user->role === 'freelancer') {
-            // الفريلانسر يشوف المشاريع المفتوحة (للتقديم) 
-            // "أو" المشاريع التي يشارك فيها فعلياً (للمتابعة والتقييم)
             $query->where(function($q) use ($user) {
                 $q->where('status', 'open')
                 ->orWhereHas('proposals', function($p) use ($user) {
                     $p->where('freelancer_id', $user->id)
-                        ->whereIn('status', ['accepted']); // العروض التي تم قبولها
+                    ->whereIn('status', ['accepted', 'completed']);
                 });
             });
         }
@@ -36,17 +35,34 @@ class ProjectController extends Controller
             $query->where('client_id', $user->id);
         }
 
-        // admin يشوف كل شيء بدون فلترة
+        // --- 🔍 بداية كود الفلترة المضاف ---
+        
+        // فلترة حسب كلمة البحث (Search)
+        if ($request->filled('search')) {
+            $query->where(function($q) use ($request) {
+                $q->where('title', 'like', '%' . $request->search . '%')
+                ->orWhere('description', 'like', '%' . $request->search . '%');
+            });
+        }
 
-        $projects = $query->paginate(3);
+        // فلترة حسب الحالة (Status) 
+        // ملاحظة: الفريلانسر غالباً سيفلتر الـ open فقط، أما الكلينت سيفلتر كل حالاته
+        if ($request->filled('status') && $request->status !== 'all') {
+            $query->where('status', $request->status);
+        }
+
+        // --- نهاية كود الفلترة ---
+
+        // 3. الترقيم (Pagination)
+        $projects = $query->paginate(3); // خليتها 3 كما في كودك
 
         return response()->json([
             'status' => true,
-            'projects' => $projects // الـ Paginate يرجع كائن يحتوي على data و current_page وغيرها
+            'projects' => $projects
         ]);
-
-        
     }
+
+
 
 
     public function store(Request $request)
@@ -223,16 +239,18 @@ class ProjectController extends Controller
                     'type' => 'project_revenue',
                     'description' => "Revenue from project: {$project->title} (Net)",
                     'trackable_id' => $project->id,
-                    'trackable_type' => Project::class
+                    'trackable_type' => get_class($project)
                 ]);
 
                 // سجل للأدمن (عمولة المنصة)
                 if ($admin) {
                     Transaction::create([
-                        'user_id' => $admin->id,
-                        'amount' => $commission,
-                        'type' => 'platform_commission',
-                        'description' => "Commission from project #{$project->id}",
+                    'user_id' => $admin->id,
+                    'amount' => $commission,
+                    'type' => 'platform_commission',
+                    'description' => "Commission from project #{$project->id}",
+                    'trackable_id' => $project->id,
+                    'trackable_type' => get_class($project)
                     ]);
                 }
                 
@@ -254,6 +272,18 @@ class ProjectController extends Controller
                 'project_completed',
                 'You marked project "' . $project->title . '" as completed. Thanks for using our platform!'
             );
+
+            $adminUser = User::where('role', 'admin')->first(); 
+            if ($adminUser) {
+                // نحسب العمولة مرة أخرى للإشعار إذا أردت إظهار الرقم
+                $commission = $acceptedProposal->price * 0.10; 
+                
+                NotificationHelper::sendNotification(
+                    $adminUser->id,
+                    'project_completed_admin', // نوع مختلف لتمييزه في لوحة الأدمن
+                    'Project "' . $project->title . '" completed successfully. Your commission: $' . $commission
+                );
+            }
 
             return response()->json([
                 'status' => true,

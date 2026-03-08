@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\WithdrawalController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ProposalController;
+use App\Http\Controllers\Api\DashboardController;
 use Illuminate\Http\Request;
 use App\Models\User;
 use App\Models\Notification;
@@ -58,6 +59,10 @@ Route::middleware('auth:sanctum')->group(function () {
         return response()->json(['status' => true, 'message' => 'All marked as read']);
     });
 
+
+
+    Route::get('/dashboard/stats', [DashboardController::class, 'getStats']);
+
 });
 
 
@@ -73,7 +78,7 @@ Route::middleware(['auth:sanctum', 'freelancer'])->group(function () {
 
 //Admin Routes
 Route::middleware(['auth:sanctum', 'admin'])->group(function () {
-    //Route::get('/admin/projects', [ProjectController::class, 'adminProjects']);
+    Route::get('/withdrawals', [WithdrawalController::class, 'allRequests']);
     Route::post('/withdrawals/{id}/approve', [WithdrawalController::class, 'approve']);
     Route::post('/withdrawals/{id}/reject', [WithdrawalController::class, 'reject']);
 });

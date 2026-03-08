@@ -12,35 +12,49 @@ use Illuminate\Support\Facades\DB;
 class ReviewController extends Controller
 {
 // تقييم الفريلانسر (يستدعيها الكلينت)
-    public function reviewFreelancer(Request $request, Project $project) {
-        $user = $request->user();
-        
-        // الشرط: الكلينت صاحب المشروع والمشروع مكتمل
-        if ($user->id !== $project->client_id || $project->status !== 'completed') {
-            return response()->json(['message' => 'Unauthorized'], 403);
-        }
-
-        $freelancerId = $project->proposals()->where('status', 'accepted')->first()->freelancer_id;
-
-        $this->saveReview($project->id, $user->id, $freelancerId, $request);
-
-        return response()->json(['status' => true, 'message' => 'Freelancer rated!']);
+public function reviewFreelancer(Request $request, Project $project) {
+    $user = $request->user();
+    
+    // 1. التحقق من صلاحية الكلينت وحالة المشروع
+    if ($user->id !== $project->client_id || $project->status !== 'completed') {
+        return response()->json(['message' => 'Unauthorized or project not completed'], 403);
     }
 
-    // تقييم الكلينت (يستدعيها الفريلانسر الفائز)
-    public function reviewClient(Request $request, Project $project) {
-        $user = $request->user();
-        $acceptedProposal = $project->proposals()->where('status', 'accepted')->first();
+    // 2. البحث عن العرض المقبول مع التحقق من وجوده
+    $acceptedProposal = $project->proposals()
+    ->whereIn('status', ['accepted', 'completed']) 
+    ->first();
 
-        // الشرط: الفريلانسر الفائز والمشروع مكتمل
-        if ($user->id !== $acceptedProposal->freelancer_id || $project->status !== 'completed') {
-            return response()->json(['message' => 'Unauthorized'], 403);
-        }
-
-        $this->saveReview($project->id, $user->id, $project->client_id, $request);
-
-        return response()->json(['status' => true, 'message' => 'Client rated!']);
+    if (!$acceptedProposal) {
+        return response()->json(['message' => 'No accepted proposal found for this project.'], 404);
     }
+
+    $this->saveReview($project->id, $user->id, $acceptedProposal->freelancer_id, $request);
+
+    return response()->json(['status' => true, 'message' => 'Freelancer rated!']);
+}
+
+
+
+public function reviewClient(Request $request, Project $project) {
+    $user = $request->user();
+    
+    // 1. البحث عن العرض المقبول أولاً (لتجنب خطأ الـ Null في الشرط التالي)
+    $acceptedProposal = $project->proposals()
+    ->whereIn('status', ['accepted', 'completed']) 
+    ->first();
+
+    if (!$acceptedProposal || $user->id !== $acceptedProposal->freelancer_id || $project->status !== 'completed') {
+        return response()->json(['message' => 'Unauthorized or project not completed'], 403);
+    }
+
+    $this->saveReview($project->id, $user->id, $project->client_id, $request);
+
+    return response()->json(['status' => true, 'message' => 'Client rated!']);
+}
+
+
+
 
     // دالة داخلية خاصة للحفظ (Private) لتجنب تكرار الكود
     private function saveReview($projectId, $reviewerId, $userId, $request) {

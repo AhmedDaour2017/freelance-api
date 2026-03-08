@@ -15,54 +15,85 @@ class WithdrawalController extends Controller
 {
 
 
-public function requestWithdrawal(Request $request)
-{
-    $request->validate([
-        'amount' => 'required|numeric|min:50' // يفضل وضع حد أدنى للسحب (مثلاً 50$)
-    ]);
 
-    try {
-        $withdrawal = DB::transaction(function () use ($request) {
-            // 1. قفل سجل المستخدم (Lock for Update) لمنع سحب الرصيد مرتين في نفس اللحظة
-            $user = User::where('id', Auth::id())->lockForUpdate()->first();
+    public function allRequests(Request $request)
+    {
+        $user = $request->user();
 
-            // 2. التحقق من الدور (Role)
-            if ($user->role !== 'freelancer') {
-                throw new \Exception('Only freelancers can request withdrawals.');
-            }
+        if ($user->role !== 'admin') {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
 
-            // 3. التحقق من الرصيد المتاح
-            if ($user->balance < $request->amount) {
-                throw new \Exception('Insufficient balance.');
-            }
+        // جلب الطلبات المعلقة مع بيانات المستخدم (اسم الفريلانسر)
+        $requests = WithdrawalRequest::with('user')
+            ->where('status', 'pending')
+            ->latest()
+            ->get();
 
-            // 💸 الخطوة الأهم: تجميد الرصيد فوراً
-            // خصم من الرصيد المتاح ونقله إلى الرصيد المعلق (أو حقل مخصص للسحوبات)
-            $user->decrement('balance', $request->amount);
-            $user->increment('pending_balance', $request->amount);
+        return response()->json($requests);
+    }
 
-            // 4. إنشاء طلب السحب
-            return WithdrawalRequest::create([
-                'user_id' => $user->id,
-                'amount' => $request->amount,
-                'status' => 'pending',
-                // 'method' => $request->method, // يفضل إضافة وسيلة السحب (PayPal, Bank)
-            ]);
-        });
 
-        return response()->json([
-            'status' => true,
-            'message' => 'Withdrawal request submitted. Funds are now frozen until admin approval.',
-            'data' => $withdrawal
+
+
+
+    public function requestWithdrawal(Request $request)
+    {
+        $request->validate([
+            'amount' => 'required|numeric|min:50'
         ]);
 
-    } catch (\Exception $e) {
-        return response()->json([
-            'status' => false,
-            'message' => $e->getMessage()
-        ], 400);
+        try {
+            // نستخدم الترانزاكشن لضمان تنفيذ كل العمليات أو فشلها معاً
+            $withdrawal = DB::transaction(function () use ($request) {
+                
+                $user = User::where('id', Auth::id())->lockForUpdate()->first();
+
+                if ($user->role !== 'freelancer') {
+                    throw new \Exception('Only freelancers can request withdrawals.');
+                }
+
+                if ($user->balance < $request->amount) {
+                    throw new \Exception('Insufficient balance.');
+                }
+
+                // 1. تجميد الرصيد
+                $user->decrement('balance', $request->amount);
+                $user->increment('pending_balance', $request->amount);
+
+                // 2. إنشاء طلب السحب
+                $newWithdrawal = WithdrawalRequest::create([
+                    'user_id' => $user->id,
+                    'amount' => $request->amount,
+                    'status' => 'pending',
+                ]);
+
+                // 3. تسجيل الحركة المالية (داخل الترانزاكشن لضمان الأمان)
+                Transaction::create([
+                    'user_id' => $user->id,
+                    'amount' => -$request->amount, // 💡 بالسالب لأنه خصم من الرصيد المتاح
+                    'type' => 'withdrawal', 
+                    'description' => "Withdrawal request #{$newWithdrawal->id} (Pending Review)",
+                    'trackable_id' => $newWithdrawal->id,
+                    'trackable_type' => WithdrawalRequest::class
+                ]);
+
+                return $newWithdrawal;
+            });
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Withdrawal request submitted. Funds are now frozen until admin approval.',
+                'data' => $withdrawal
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => false,
+                'message' => $e->getMessage()
+            ], 400);
+        }
     }
-}
 
 
 
@@ -98,7 +129,9 @@ public function requestWithdrawal(Request $request)
                     'user_id' => $user->id,
                     'amount' => $withdrawal->amount,
                     'type' => 'withdrawal',
-                    'description' => "Withdrawal approved and sent to user."
+                    'description' => "Withdrawal approved and sent to user.",
+                    'trackable_id' => $withdrawal->id,
+                    'trackable_type' => get_class($withdrawal)
                 ]);
                 
             });
@@ -119,6 +152,7 @@ public function requestWithdrawal(Request $request)
             return response()->json(['message' => $e->getMessage()], 400);
         }
     }
+
 
 
 
@@ -158,7 +192,9 @@ public function requestWithdrawal(Request $request)
                     'user_id' => $user->id,
                     'amount' => $withdrawal->amount,
                     'type' => 'refund',
-                    'description' => "Refunded withdrawal request #{$withdrawal->id} (Rejected by Admin)"
+                    'description' => "Refunded withdrawal request #{$withdrawal->id} (Rejected by Admin)",
+                    'trackable_id' => $withdrawal->id,
+                    'trackable_type' => get_class($withdrawal)
                 ]);
                 
             });

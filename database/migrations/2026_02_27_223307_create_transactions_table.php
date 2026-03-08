@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('user_id')->constrained();
             $table->decimal('amount', 10, 2);
-            $table->enum('type', ['deposit', 'withdrawal', 'project_payment', 'project_revenue', 'refund']);
+            $table->enum('type', ['deposit', 'withdrawal', 'project_payment', 'project_revenue', 'platform_commission', 'refund']);
             $table->morphs('trackable'); // لربط العملية بالمشروع أو طلب السحب (Polymorphic)
             $table->text('description')->nullable();
             $table->timestamps();
