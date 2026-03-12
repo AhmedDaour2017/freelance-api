@@ -22,7 +22,9 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
-        'role'
+        'role',
+        'bio',
+        'image'
     ];
 
     /**
@@ -72,6 +74,7 @@ class User extends Authenticatable
         return $this->hasMany(WithdrawalRequest::class);
     }
 
+    
     public function transactions() {
         return $this->hasMany(Transaction::class);
     }

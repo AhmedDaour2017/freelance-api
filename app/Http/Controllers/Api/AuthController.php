@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Helpers\NotificationHelper;
 use Illuminate\Http\Request;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
@@ -19,21 +20,40 @@ class AuthController extends Controller
             'role' => 'required|in:client,freelancer'
         ]);
 
+        $defaultBio = $request->role === 'freelancer' 
+            ? "I am a professional freelancer ready to work." 
+            : "I am a client looking for top talent.";
+
         $user = User::create([
             'name' => $request->name,
             'email' => $request->email,
             'password' => Hash::make($request->password),
-            'role' => $request->role
+            'role' => $request->role,
+            'bio' => $defaultBio,
+            'image' => 'default-avatar.png'
         ]);
 
         $token = $user->createToken('auth_token')->plainTextToken;
 
+        
+        $adminId = User::where('role', 'admin')->first()->id ?? 1;
+        NotificationHelper::sendNotification(
+            $adminId, 
+            'new_user_registered', 
+            "A new {$request->role} has joined: {$request->name}"
+        );
+
+
         return response()->json([
+            'status' => true,
             'message' => 'User registered successfully',
             'user' => $user,
             'token' => $token
         ], 201);
     }
+
+
+
 
     // Login
     public function login(Request $request)
