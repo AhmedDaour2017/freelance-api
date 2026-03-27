@@ -76,6 +76,9 @@ public function getStats(Request $request)
             'user' => [
                 'id' => $user->id,
                 'role' => $user->role,
+                'name' => $user->name,
+                'image_url' => $user->image_url,
+                'bio' => $user->bio,
                 'balance' => number_format($user->balance, 2),
                 'pending_balance' => number_format($user->pending_balance, 2),
             ],

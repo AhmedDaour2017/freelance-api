@@ -37,6 +37,8 @@ class User extends Authenticatable
         'remember_token',
     ];
 
+    
+
     /**
      * Get the attributes that should be cast.
      *
@@ -50,7 +52,7 @@ class User extends Authenticatable
         ];
     }
 
-    protected $appends = ['avg_rating', 'reviews_count'];
+    protected $appends = ['avg_rating', 'reviews_count','image_url'];
 
     public function projects()
     {
@@ -92,6 +94,24 @@ class User extends Authenticatable
 
     public function reviews() {
         return $this->hasMany(Review::class, 'user_id'); // التقييمات اللي انكتبت عنه
+    }
+
+
+
+
+    public function getImageUrlAttribute()
+    {
+        if (!$this->image || $this->image === 'default-avatar.png') {
+            return asset('default-avatar.png');
+        }
+        return asset('storage/' . $this->image);
+    }
+
+
+
+    public function portfolios()
+    {
+        return $this->hasMany(Portfolio::class);
     }
 
 

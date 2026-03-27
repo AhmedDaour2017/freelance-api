@@ -7,6 +7,8 @@ use App\Helpers\NotificationHelper;
 use Illuminate\Http\Request;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Auth;
 
 class AuthController extends Controller
 {
@@ -89,4 +91,48 @@ class AuthController extends Controller
             'message' => 'Logged out successfully'
         ]);
     }
+
+
+
+
+
+
+    //update profile
+    public function update(Request $request)
+    {
+        $user = Auth::user();
+
+        $request->validate([
+            'name'     => 'required|string|max:255',
+            'email'    => 'required|email|unique:users,email,' . $user->id, 
+            'bio'      => 'nullable|string|max:1000',
+            'image'    => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+            'password' => 'nullable|string|min:6|confirmed',
+        ]);
+
+        $user->name = $request->name;
+        $user->email = $request->email; 
+        $user->bio = $request->bio;
+
+        if ($request->filled('password')) {
+            $user->password = Hash::make($request->password);
+        }
+
+        if ($request->hasFile('image')) {
+            if ($user->image && $user->image !== 'default-avatar.png') {
+                Storage::disk('public')->delete($user->image);
+            }
+            $user->image = $request->file('image')->store('profiles', 'public');
+        }
+
+        $user->save();
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Profile updated successfully!',
+            'user' => $user
+        ]);
+    }
+
+
 }

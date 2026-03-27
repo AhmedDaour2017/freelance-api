@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ProposalController;
 use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\PortfolioController;
 use Illuminate\Http\Request;
 use App\Models\User;
 use App\Models\Notification;
@@ -24,7 +25,6 @@ Route::middleware('auth:sanctum')->group(function () {
 //Client Routes
 Route::middleware(['auth:sanctum', 'client'])->group(function () {
     Route::post('/projects', [ProjectController::class, 'store']);
-    //Route::get('/client/projects', [ProjectController::class, 'clientProjects']);
     //accept proposal from client
     Route::post('/proposals/{proposal}/accept', [ProposalController::class, 'accept']);
     Route::post('/proposals/{proposal}/reject', [ProposalController::class, 'reject']);
@@ -32,11 +32,11 @@ Route::middleware(['auth:sanctum', 'client'])->group(function () {
     Route::post('/projects/{project}/complete', [ProjectController::class, 'complete']);
 });
 
-    // Project details
+    //Project details
     Route::get('/projects/{project}', [ProjectController::class, 'show']);
     
 Route::middleware('auth:sanctum')->group(function () {
-    // Update/Delete (Client only or Admin)
+    //Update/Delete (Client only)
     Route::put('/projects/{project}', [ProjectController::class, 'update']);
     Route::delete('/projects/{project}', [ProjectController::class, 'destroy']);
 
@@ -45,7 +45,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/projects/{project}/review-client', [ReviewController::class, 'reviewClient']);
 
     
-        // جلب الإشعارات (آخر 15 إشعار)
     Route::get('/notifications', function (Request $request) {
         return Notification::where('user_id', $request->user()->id)
         ->orderBy('created_at', 'desc')
@@ -60,8 +59,13 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
 
-
     Route::get('/dashboard/stats', [DashboardController::class, 'getStats']);
+
+
+    Route::post('/profile/update', [AuthController::class, 'update']);
+
+
+    Route::post('/portfolios', [PortfolioController::class, 'store']);
 
 });
 
@@ -90,9 +94,14 @@ Route::middleware('auth:sanctum')->get('/profile', function (Request $request) {
 
 
 Route::middleware('auth:sanctum')->get('/users/{user}/profile', function (User $user) {
-    // تحميل التقييمات مع التأكد من وجود الموديل
+    // تحميل التقييمات وآخر 6 أعمال فقط للمودال
+    $user->load(['reviews', 'portfolios' => function($q) {
+        $q->latest()->limit(6);
+    }]);
+
+    // تأكد من إرجاع JSON يحتوي على مفتاح 'user'
     return response()->json([
-        'user' => $user->load(['reviews']) 
+        'user' => $user
     ]);
 });
 
