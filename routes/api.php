@@ -67,6 +67,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/portfolios', [PortfolioController::class, 'store']);
 
+
+
+
+    Route::put('/portfolios/{portfolio}', [PortfolioController::class, 'update']);
+    Route::delete('/portfolios/{portfolio}', [PortfolioController::class, 'destroy']);
+
 });
 
 
@@ -76,6 +82,8 @@ Route::middleware('auth:sanctum')->group(function () {
 Route::middleware(['auth:sanctum', 'freelancer'])->group(function () {
     Route::post('/projects/{project}/proposals', [ProposalController::class, 'store']);
     Route::post('/withdraw', [WithdrawalController::class, 'requestWithdrawal']);
+
+
 });
 
 
