@@ -101,7 +101,7 @@ use Illuminate\Support\Facades\Auth;
     {
         // 1. الحماية: التأكد أن الفريلانسر هو صاحب العمل فعلاً
         if ($request->user()->id  !== $portfolio->user_id) {
-            return response()->json(['message' => 'Unauthorized!'], 403);
+            return response()->json(['message' => 'Unauthorized! This is not your work.'], 403);
         }
 
         // 2. حذف الصورة الحقيقية من السيرفر (Storage)
